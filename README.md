@@ -120,20 +120,6 @@ Automatically finds the best **5-card hand** from **7 available cards**.
 
 ---
 
-# 📸 Screenshots
-
-> Replace these with actual screenshots.
-
-<p align="center">
-
-<img src="docs/lobby.png" width="31%">
-<img src="docs/table.png" width="31%">
-<img src="docs/results.png" width="31%">
-
-</p>
-
----
-
 # 🏗 Architecture
 
 ```
