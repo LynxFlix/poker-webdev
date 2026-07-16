@@ -131,6 +131,38 @@ app.post('/api/login', async (req, res) => {
 // ════════════════════════════════════════════════════
 const rooms = {};
 
+// ── Auto-fold timer (per room) ────────────────────────
+const TURN_TIMEOUT_MS = 30000; // 30 seconds
+const turnTimers = {}; // roomCode → timeout handle
+
+function clearTurnTimer(roomCode) {
+  if (turnTimers[roomCode]) {
+    clearTimeout(turnTimers[roomCode]);
+    delete turnTimers[roomCode];
+  }
+}
+
+function startTurnTimer(room) {
+  clearTurnTimer(room.code);
+  const actingId = room.actingId;
+  if (!actingId) return;
+  turnTimers[room.code] = setTimeout(() => {
+    const r = rooms[room.code];
+    if (!r || r.actingId !== actingId || r.screen !== 'reveal') return;
+    const p = playerById(r, actingId);
+    if (!p || p.folded) return;
+    const toCall = r.currentBet - p.currentBet;
+    if (toCall > 0) {
+      handleFold(r, p);
+      logMsg(r, `${p.name} folded (time expired)`);
+    } else {
+      logMsg(r, `${p.name} checks (auto — time expired)`);
+      applyBet(r, p, p.currentBet);
+    }
+    advanceTurn(r);
+  }, TURN_TIMEOUT_MS);
+}
+
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
@@ -241,6 +273,7 @@ function advanceStreet(room) {
   room.toActQueue = buildQueueFrom(room, sbPos);
   room.actingId   = room.toActQueue[0];
   logMsg(room, `Board updated: ${room.street.toUpperCase()}`);
+  startTurnTimer(room);
   broadcastRoomState(room);
 }
 
@@ -248,7 +281,7 @@ function advanceTurn(room) {
   const remaining = nonFoldedPlayers(room);
   if (remaining.length === 1) { concludeUncontested(room, remaining[0]); return; }
   if (room.toActQueue.length === 0) advanceStreet(room);
-  else { room.actingId = room.toActQueue[0]; broadcastRoomState(room); }
+  else { room.actingId = room.toActQueue[0]; startTurnTimer(room); broadcastRoomState(room); }
 }
 
 function concludeUncontested(room, winner) {
@@ -262,6 +295,7 @@ function concludeUncontested(room, winner) {
     shows: [],
   };
   room.screen = 'handover';
+  clearTurnTimer(room.code);
   broadcastRoomState(room);
 }
 
@@ -297,6 +331,7 @@ function goToShowdown(room) {
   potResults.forEach(pr => pr.winners.forEach(w => logMsg(room, `${w.name} wins ${w.amount} with ${w.desc}`)));
   room.handoverResult = { uncontested: false, board: room.community.slice(), pots: potResults, shows };
   room.screen = 'handover';
+  clearTurnTimer(room.code);
   broadcastRoomState(room);
 }
 
@@ -343,7 +378,7 @@ function startHand(room) {
   room.toActQueue        = buildQueueFrom(room, firstActPos);
   logMsg(room, `— Hand #${room.handNumber} — ${sbPlayer.name} SB ${room.smallBlind}, ${bbPlayer.name} BB ${room.bigBlind}`);
   if (room.toActQueue.length <= 1) resolveNoMoreBetting(room);
-  else { room.actingId = room.toActQueue[0]; room.screen = 'reveal'; }
+  else { room.actingId = room.toActQueue[0]; room.screen = 'reveal'; startTurnTimer(room); }
   broadcastRoomState(room);
 }
 
@@ -353,8 +388,9 @@ function startHand(room) {
 // SECURE STATE SERIALIZER
 // ════════════════════════════════════════════════════
 function serializeStateForPlayer(room, targetUsername) {
+  const isSpectator   = (room.spectators || []).some(s => s.id === targetUsername);
   const serializedPlayers = room.players.map(p => {
-    const isTarget  = p.id === targetUsername;
+    const isTarget  = p.id === targetUsername && !isSpectator;
     const showHole  = (room.screen === 'handover' || isTarget) && !p.folded && p.holeCards?.length === 2;
     return {
       id:               p.id,
@@ -387,6 +423,11 @@ function serializeStateForPlayer(room, targetUsername) {
     handNumber:        room.handNumber,
     log:               room.log,
     handoverResult:    room.screen === 'handover' ? room.handoverResult : null,
+    turnTimeoutMs:     TURN_TIMEOUT_MS,
+    // Chat & spectator
+    chatMessages:      (room.chatMessages || []).slice(0, 50),
+    spectators:        (room.spectators || []).map(s => ({ id: s.id, name: s.name, connected: !!s.socketId })),
+    isSpectator,
   };
 }
 
@@ -394,6 +435,12 @@ function broadcastRoomState(room) {
   room.players.forEach(p => {
     if (p.socketId) {
       io.to(p.socketId).emit('state_update', serializeStateForPlayer(room, p.id));
+    }
+  });
+  // Also broadcast to spectators
+  (room.spectators || []).forEach(s => {
+    if (s.socketId) {
+      io.to(s.socketId).emit('state_update', serializeStateForPlayer(room, s.id));
     }
   });
 }
@@ -419,8 +466,27 @@ io.on('connection', (socket) => {
     const { code } = data;
     const cleanCode = (code || '').trim().toUpperCase();
     const room      = rooms[cleanCode];
-    if (!room)                                                    return callback({ error: 'Room not found' });
-    if (room.status === 'active' && !playerById(room, socket.username)) return callback({ error: 'Game already started in this room' });
+    if (!room) return callback({ error: 'Room not found' });
+
+    // ── Spectator path: game active and user is not a player ──
+    if (room.status === 'active' && !playerById(room, socket.username)) {
+      if (!room.spectators) room.spectators = [];
+      let spec = room.spectators.find(s => s.id === socket.username);
+      if (!spec) {
+        spec = { id: socket.username, name: socket.username, socketId: socket.id };
+        room.spectators.push(spec);
+        logMsg(room, `👁 ${socket.username} is spectating`);
+      } else {
+        spec.socketId = socket.id;
+      }
+      socket.roomCode = cleanCode;
+      socket.isSpectator = true;
+      socket.join(cleanCode);
+      callback({ success: true, roomCode: cleanCode, spectator: true });
+      broadcastRoomState(room);
+      return;
+    }
+
     if (room.players.length >= 8 && !playerById(room, socket.username)) return callback({ error: 'Room is full' });
 
     let player = playerById(room, socket.username);
@@ -455,6 +521,7 @@ io.on('connection', (socket) => {
       dealerIndex: -1, deck: [], community: [], street: 'preflop',
       currentBet: 0, minRaiseIncrement: bb, ring: [], toActQueue: [],
       actingId: null, handNumber: 0, log: [], handoverResult: null,
+      chatMessages: [], spectators: [],
     };
     rooms[roomCode] = room;
     const player = {
@@ -486,6 +553,7 @@ io.on('connection', (socket) => {
     const room = rooms[socket.roomCode];
     if (!room || room.status !== 'active') return;
     if (room.actingId !== socket.username) return;
+    clearTurnTimer(room.code); // cancel auto-fold when player acts
     const { type, amount } = data;
     const player = playerById(room, socket.username);
     if (type === 'fold')                     handleFold(room, player);
@@ -494,6 +562,57 @@ io.on('connection', (socket) => {
     else if (type === 'bet' || type === 'raise') { logMsg(room, `${player.name} ${type}s to ${amount}${amount === player.currentBet + player.chips ? ' (all in)' : ''}`); applyBet(room, player, amount); }
     else if (type === 'allin')               { const total = player.currentBet + player.chips; logMsg(room, `${player.name} goes all in for ${total}`); applyBet(room, player, total); }
     advanceTurn(room);
+  });
+
+  // ── Chat message ────────────────────────────────────
+  socket.on('chat_message', (data) => {
+    const room = rooms[socket.roomCode];
+    if (!room) return;
+    const text = (data.text || '').trim().slice(0, 120);
+    if (!text) return;
+    const msg = { id: Date.now(), user: socket.username, text, time: Date.now() };
+    if (!room.chatMessages) room.chatMessages = [];
+    room.chatMessages.unshift(msg);
+    if (room.chatMessages.length > 60) room.chatMessages.pop();
+    io.to(room.code).emit('chat_message', msg);
+  });
+
+  // ── Spectator join as player ───────────────────────
+  socket.on('join_as_player', (callback) => {
+    const room = rooms[socket.roomCode];
+    if (!room) return callback?.({ error: 'Room not found' });
+    if (room.screen !== 'handover' && room.screen !== 'setup') {
+      return callback?.({ error: 'Can only join between rounds' });
+    }
+    if (room.players.length >= 8) {
+      return callback?.({ error: 'Table is full' });
+    }
+    const alreadyPlayer = playerById(room, socket.username);
+    if (alreadyPlayer) {
+      return callback?.({ error: 'You are already a player' });
+    }
+
+    if (room.spectators) {
+      room.spectators = room.spectators.filter(s => s.id !== socket.username);
+    }
+
+    const chips = room.startingChips;
+    const player = {
+      id: socket.username,
+      name: socket.username,
+      chips,
+      holeCards: [],
+      folded: false,
+      allIn: false,
+      currentBet: 0,
+      totalContributed: 0,
+      socketId: socket.id
+    };
+    room.players.push(player);
+    socket.isSpectator = false;
+    logMsg(room, `${socket.username} joined the game as player`);
+    callback?.({ success: true });
+    broadcastRoomState(room);
   });
 
   // ── Next hand ──────────────────────────────────────
@@ -552,6 +671,20 @@ io.on('connection', (socket) => {
 function handleLeave(socket, isExplicit) {
   const room = rooms[socket.roomCode];
   if (!room) return;
+
+  // ── Handle spectator leaving ───────────────────────
+  if (!room.spectators) room.spectators = [];
+  const specIdx = room.spectators.findIndex(s => s.id === socket.username);
+  if (specIdx !== -1) {
+    if (isExplicit) {
+      room.spectators.splice(specIdx, 1);
+      logMsg(room, `${socket.username} stopped spectating`);
+    } else {
+      room.spectators[specIdx].socketId = null;
+    }
+    broadcastRoomState(room);
+    return;
+  }
 
   const player = playerById(room, socket.username);
   if (!player) return;
