@@ -431,7 +431,7 @@ See the `LICENSE` file for details.
 
 ### Modern Multiplayer Texas Hold'em
 
-Built with ❤️ by **LynxFlix** * **Mjölnir782**
+Built with ❤️ by **LynxFlix** *&* **Mjölnir782**
 
 ⭐ **If you enjoyed this project, consider giving it a Star on GitHub!**
 
