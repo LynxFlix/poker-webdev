@@ -632,27 +632,6 @@ function renderGame(){
   const me=gameState.players.find(p=>p.id===username);
   const isHost=gameState.creator===username;
 
-  // ── GAME OVER ─────────────────────────────────────
-  if(gameState.screen==='gameover'){
-    const w=gameState.players.find(p=>p.chips>0)||gameState.players[0];
-    const iWin=w?.id===username;
-    if(iWin){SFX.win();confetti();}
-    appEl.innerHTML=`
-    <div class="gameover-root">
-      <div class="go-card">
-        <div class="go-emoji">🏆</div>
-        <div class="go-over-label">Tournament Champion</div>
-        <div class="go-winner-name">${esc(w?.name||'?')}</div>
-        <div class="go-sub">${iWin?'🎉 You dominated the table!':esc(w?.name)+' takes it all!'}</div>
-        <div class="go-chips">✦ ${w?.chips||0} chips</div>
-        <div class="go-divider"></div>
-        ${!isSpectator&&me?.chips===0?`<div class="rebuy-box"><div class="rebuy-label">⚠️ You're out of chips!</div><div class="rebuy-sub">Free top-up: ✦ ${gameState.startingChips||1000} chips</div><button class="btn btn-gold" onclick="rebuyChips()" style="width:100%;margin-bottom:10px;">🎁 Top Up</button></div>`:''}
-        <button class="btn btn-cyan" onclick="leaveRoom()" style="width:100%;">⬅ Return to Lobby</button>
-      </div>
-    </div>`;
-    return;
-  }
-
   // ── WAITING ROOM ───────────────────────────────────
   if(gameState.screen==='setup'){
     const listHtml=gameState.players.map(p=>`<div class="wait-row">
@@ -790,10 +769,17 @@ function renderGame(){
       </div>
       ` : (isHandover ? `
       <div class="action-dock" id="adock">
-        ${isHost
+        ${me.chips===0 ? `
+          <div class="rebuy-box" style="width:100%;">
+            <div class="rebuy-label">⚠️ You're out of chips!</div>
+            <div class="rebuy-sub">Top up to ✦ ${gameState.startingChips||1000} chips, or leave the room.</div>
+            <button class="btn btn-gold" id="topup-btn" style="width:100%;margin-bottom:10px;">🎁 Top Up</button>
+            <button class="btn btn-cyan" id="leave-table-btn" style="width:100%;">⬅ Leave Room</button>
+          </div>
+        ` : (isHost
           ? `<button class="btn btn-gold" id="next-hand-btn" style="padding: 16px 24px; font-size: 16px;">Deal Next Hand →</button>`
           : `<div class="status-banner status-waiting" style="padding: 12px 18px; font-size: 14px;">Waiting for host to start next hand…</div>`
-        }
+        )}
       </div>
       ` : '')}
 
@@ -811,6 +797,14 @@ function renderGame(){
   if(isHandover && isHost){
     const nhb=document.getElementById('next-hand-btn');
     if(nhb)nhb.onclick=()=>socket.emit('next_hand');
+  }
+
+  // Busted player: top up or leave
+  if(isHandover && me.chips===0){
+    const tub=document.getElementById('topup-btn');
+    if(tub)tub.onclick=()=>rebuyChips();
+    const ltb=document.getElementById('leave-table-btn');
+    if(ltb)ltb.onclick=()=>leaveRoom();
   }
 
   // Action handlers
