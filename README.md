@@ -21,7 +21,7 @@ A modern, full-stack multiplayer **Texas Hold'em** platform built with **Node.js
 
 ### 🎮 Built for competitive online poker with a smooth real-time multiplayer experience.
 
-### 🌐 Live Demo **▶ https://your-railway-domain.up.railway.app**
+### 🌐 Live Demo **▶ poker-webdev-production.up.railway.app**
 
 </div>
 
