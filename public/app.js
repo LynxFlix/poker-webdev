@@ -5,7 +5,6 @@ const appEl = document.getElementById('app');
 
 let token    = localStorage.getItem('poker_token')    || null;
 let username = localStorage.getItem('poker_username') || null;
-let balance  = Number(localStorage.getItem('poker_balance')) || 0;
 
 let socket    = null;
 let gameState = null;
@@ -218,14 +217,12 @@ function connectSocket(){
   socket.on('state_update',s=>{
     detectEvents(s);
     gameState=s;
-    const me=s.players?.find(p=>p.id===username);
-    if(me){balance=me.chips;localStorage.setItem('poker_balance',balance);}
     render();
   });
   socket.on('disconnect',()=>clearTimer());
 }
 function logout(){
-  localStorage.clear();token=null;username=null;balance=0;gameState=null;
+  localStorage.clear();token=null;username=null;gameState=null;
   clearTimer();if(socket){socket.disconnect();socket=null;}render();
 }
 function leaveRoom(){
@@ -236,37 +233,15 @@ function leaveRoom(){
 }
 function rebuyChips(){
   const sc = gameState?.startingChips || 1000;
-  socket.emit('rebuy_chips', { amount: sc }, r => {
+  socket.emit('rebuy_chips', {}, r => {
     if(r.error) {
       toast('❌ ' + r.error, 't-fold', 2800);
     } else {
-      toast('💰 Rebuy successful! +✦ ' + sc, 't-raise', 2800);
-      balance = r.newBalance;
-      localStorage.setItem('poker_balance', balance);
+      toast(`💰 Top-up! +✦ ${sc} chips`, 't-raise', 2800);
       SFX.chip();
       render();
     }
   });
-}
-async function claimTopup(){
-  try {
-    const res = await fetch('/api/topup', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + token
-      }
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to claim');
-    toast('🎁 Claimed 5,000 chips successfully!', 't-raise', 2800);
-    balance = data.balance;
-    localStorage.setItem('poker_balance', balance);
-    SFX.win();
-    render();
-  } catch(ex) {
-    toast('❌ ' + ex.message, 't-fold', 2800);
-  }
 }
 
 // ════════════════════════════════════════════════════
@@ -428,8 +403,8 @@ function renderAuth(){
       const res=await fetch(isSignup?'/api/signup':'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
       const data=await res.json();
       if(!res.ok)throw new Error(data.error||'Failed');
-      token=data.token;username=data.username;balance=data.balance;
-      localStorage.setItem('poker_token',token);localStorage.setItem('poker_username',username);localStorage.setItem('poker_balance',balance);
+      token=data.token;username=data.username;
+      localStorage.setItem('poker_token',token);localStorage.setItem('poker_username',username);
       SFX.chip();connectSocket();render();
     }catch(ex){
       errEl.textContent=ex.message;errEl.style.display='block';
@@ -448,17 +423,9 @@ function renderLobby(){
       <div class="lobby-header">
         <div>
           <div class="lh-name">◈ &nbsp;${esc(username)}</div>
-          <div class="lh-chips">✦ ${balance} chips</div>
         </div>
         <button class="btn-ghost" onclick="logout()">Disconnect</button>
       </div>
-
-      ${balance === 0
-        ? `<div style="background:rgba(255,214,0,0.06);border:1px dashed rgba(255,214,0,0.3);border-radius:8px;padding:14px;margin-bottom:14px;text-align:center;">
-            <div style="font-size:13px;color:var(--text);margin-bottom:8px;font-weight:600;">⚠️ You are completely out of chips!</div>
-            <button class="btn btn-gold" onclick="claimTopup()" style="padding:8px 16px;font-size:13px;font-weight:700;">🎁 Claim Free 5,000 Chips</button>
-           </div>`
-        : ''}
 
       <div class="lobby-panel">
         <div class="tab-strip">
@@ -524,7 +491,7 @@ function renderGame(){
     if(iWin){SFX.win();confetti();}
 
     const myChips = me?.chips || 0;
-    const canRebuy = myChips === 0 && balance >= (gameState.startingChips || 1000);
+
 
     appEl.innerHTML=`
     <div class="gameover-root" style="animation:screenIn .45s cubic-bezier(.22,1,.36,1);">
@@ -538,9 +505,9 @@ function renderGame(){
 
         ${myChips === 0
           ? `<div style="margin-bottom:16px;text-align:center;">
-              <div style="font-size:13px;color:var(--text-dim);margin-bottom:8px;">You have run out of chips!</div>
-              <div style="font-size:12px;color:var(--gold-text);font-family:var(--f-mono);margin-bottom:12px;">Account Balance: ✦ ${balance}</div>
-              <button class="btn btn-gold" onclick="rebuyChips()" style="width:100%;margin-bottom:10px;">💰 Rebuy & Continue (✦ ${gameState.startingChips || 1000})</button>
+              <div style="font-size:13px;color:var(--text-dim);margin-bottom:8px;">You're out of chips!</div>
+              <div style="font-size:12px;color:var(--gold-text);font-family:var(--f-mono);margin-bottom:12px;">Free top-up: ✦ ${gameState.startingChips || 1000} chips</div>
+              <button class="btn btn-gold" onclick="rebuyChips()" style="width:100%;margin-bottom:10px;">🎁 Top Up &amp; Continue</button>
              </div>`
           : ''}
 
@@ -784,10 +751,10 @@ function renderHandover(){
 
       ${myChips === 0
         ? `<div style="background:rgba(255,214,0,0.06);border:1px dashed rgba(255,214,0,0.3);border-radius:8px;padding:12px;margin-top:14px;text-align:center;">
-             <div style="color:var(--gold-text);font-weight:700;font-size:13px;margin-bottom:6px;">⚠️ You have 0 chips! Rebuy now to stay in the game:</div>
-             <div style="font-size:11px;color:var(--text-dim);font-family:var(--f-mono);margin-bottom:10px;">Account Balance: ✦ ${balance}</div>
+             <div style="color:var(--gold-text);font-weight:700;font-size:13px;margin-bottom:6px;">⚠️ You're out of chips!</div>
+             <div style="font-size:12px;color:var(--text-dim);font-family:var(--f-mono);margin-bottom:10px;">Free top-up: ✦ ${gameState.startingChips || 1000} chips</div>
              <div style="display:flex;gap:10px;justify-content:center;">
-               <button class="btn btn-gold" onclick="rebuyChips()" style="padding:8px 16px;font-size:13px;">💰 Rebuy (✦ ${gameState.startingChips || 1000})</button>
+               <button class="btn btn-gold" onclick="rebuyChips()" style="padding:8px 16px;font-size:13px;">🎁 Top Up & Stay</button>
                <button class="leave-btn" onclick="leaveRoom()">⬅ Leave Room</button>
              </div>
            </div>`

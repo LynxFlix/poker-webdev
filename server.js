@@ -27,7 +27,6 @@ const userSchema = new mongoose.Schema({
   _id:      { type: String },          // username (lowercase) as _id
   username: { type: String, required: true },
   password: { type: String, required: true },
-  balance:  { type: Number, default: 5000 },
 }, {
   timestamps: true,                    // createdAt, updatedAt auto-fields
   _id: false                           // we manage _id ourselves
@@ -81,11 +80,7 @@ async function saveUser(username, data) {
 }
 
 async function updateUserBalance(username, balance) {
-  if (useMongoose) {
-    await User.findByIdAndUpdate(username, { $set: { balance } });
-  } else {
-    if (memUsers[username]) memUsers[username].balance = balance;
-  }
+  // No-op: Users do not have any global chip balance now.
 }
 
 // ════════════════════════════════════════════════════
@@ -109,10 +104,10 @@ app.post('/api/signup', async (req, res) => {
     return res.status(400).json({ error: 'Username already exists' });
 
   const hashedPassword = bcrypt.hashSync(password, 8);
-  await saveUser(lowerName, { username: cleanUsername, password: hashedPassword, balance: 5000 });
+  await saveUser(lowerName, { username: cleanUsername, password: hashedPassword });
 
   const token = jwt.sign({ username: cleanUsername }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, username: cleanUsername, balance: 5000 });
+  res.json({ token, username: cleanUsername });
 });
 
 app.post('/api/login', async (req, res) => {
@@ -128,28 +123,7 @@ app.post('/api/login', async (req, res) => {
     return res.status(400).json({ error: 'Invalid username or password' });
 
   const token = jwt.sign({ username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, username: user.username, balance: user.balance });
-});
-
-app.post('/api/topup', async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: 'Token required' });
-  const token = authHeader.split(' ')[1];
-
-  jwt.verify(token, JWT_SECRET, async (err, decoded) => {
-    if (err) return res.status(401).json({ error: 'Invalid token' });
-    const lowerName = decoded.username.toLowerCase();
-    const user = await loadUser(lowerName);
-    if (!user) return res.status(400).json({ error: 'User not found' });
-
-    if (user.balance > 0) {
-      return res.status(400).json({ error: 'You still have chips in your account!' });
-    }
-
-    const newBalance = 5000;
-    await updateUserBalance(lowerName, newBalance);
-    res.json({ balance: newBalance });
-  });
+  res.json({ token, username: user.username });
 });
 
 // ════════════════════════════════════════════════════
@@ -288,7 +262,6 @@ function concludeUncontested(room, winner) {
     shows: [],
   };
   room.screen = 'handover';
-  updateUserDatabaseBalances(room);
   broadcastRoomState(room);
 }
 
@@ -324,7 +297,6 @@ function goToShowdown(room) {
   potResults.forEach(pr => pr.winners.forEach(w => logMsg(room, `${w.name} wins ${w.amount} with ${w.desc}`)));
   room.handoverResult = { uncontested: false, board: room.community.slice(), pots: potResults, shows };
   room.screen = 'handover';
-  updateUserDatabaseBalances(room);
   broadcastRoomState(room);
 }
 
@@ -375,13 +347,7 @@ function startHand(room) {
   broadcastRoomState(room);
 }
 
-function updateUserDatabaseBalances(room) {
-  room.players.forEach(p => {
-    updateUserBalance(p.id.toLowerCase(), p.chips).catch(err =>
-      console.error('Failed to update balance for', p.id, err.message)
-    );
-  });
-}
+
 
 // ════════════════════════════════════════════════════
 // SECURE STATE SERIALIZER
@@ -459,8 +425,7 @@ io.on('connection', (socket) => {
 
     let player = playerById(room, socket.username);
     if (!player) {
-      const user = await loadUser(socket.username.toLowerCase());
-      const chips = user ? user.balance : room.startingChips;
+      const chips = room.startingChips;
       player = {
         id: socket.username, name: socket.username, chips,
         holeCards: [], folded: false, allIn: false,
@@ -552,22 +517,11 @@ io.on('connection', (socket) => {
     }
 
     const sc = Number(room.startingChips) || 1000;
-    const rebuyAmount = Number(data?.amount) || sc;
-    const user = await loadUser(socket.username.toLowerCase());
-    const available = user ? user.balance : 5000;
-
-    if (available < rebuyAmount) {
-      return callback?.({ error: `Insufficient account balance. Available: ✦ ${available}` });
-    }
-
-    const newBalance = available - rebuyAmount;
-    await updateUserBalance(socket.username.toLowerCase(), newBalance);
-
-    player.chips = rebuyAmount;
+    player.chips = sc;
     player.folded = false;
     player.allIn = false;
 
-    logMsg(room, `✦ ${socket.username} rebuys ✦ ${rebuyAmount} chips`);
+    logMsg(room, `✦ ${socket.username} rebuys ✦ ${sc} chips`);
 
     // If game was over, and now we have at least 2 active players, transition back to handover
     if (room.screen === 'gameover') {
@@ -577,7 +531,7 @@ io.on('connection', (socket) => {
       }
     }
 
-    callback?.({ success: true, newBalance, chips: player.chips });
+    callback?.({ success: true, chips: player.chips });
     broadcastRoomState(room);
   });
 
@@ -622,16 +576,12 @@ function handleLeave(socket, isExplicit) {
   const wasActing = room.actingId === socket.username;
 
   if (isExplicit) {
-    // Explicit leave: fold if in hand, mark chips 0 so they're excluded next hand
+    // Explicit leave: fold if in hand, and remove player from table
     if (!player.folded) {
       handleFold(room, player);
-      logMsg(room, `${socket.username} left the game (auto-fold)`);
     }
-    // Save their current chips to DB before zeroing out
-    updateUserBalance(socket.username.toLowerCase(), player.chips).catch(() => {});
-    player.chips   = 0;
-    player.folded  = true;
-    player.socketId = null;
+    logMsg(room, `${socket.username} left the room`);
+    room.players = room.players.filter(p => p.id !== socket.username);
 
     // Pass host if leaving player was creator
     if (room.creator === socket.username) {
