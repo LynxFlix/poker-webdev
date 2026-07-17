@@ -593,7 +593,14 @@ function spinSlots(){
   const spinTick=setInterval(()=>{
     slotReels=[0,1,2].map(()=>SLOT_DISPLAY_SYMS[Math.floor(Math.random()*SLOT_DISPLAY_SYMS.length)]);
     SFX.reel();
-    render();
+    // Update only the reel symbols directly instead of re-rendering the
+    // whole screen — a full render() here was tearing down and rebuilding
+    // the entire game UI (table, chat, action buttons...) 11+ times per
+    // second while spinning, causing the whole page to flicker/flash.
+    [0,1,2].forEach(i=>{
+      const el=document.getElementById('slot-reel-'+i);
+      if(el)el.textContent=slotReels[i];
+    });
   },90);
 
   let serverResult=null,serverErr=null,settled=false;
@@ -645,9 +652,9 @@ function slotModalHtml(me){
       <div class="sjm-icon">🎰</div>
       <h3>Lucky Slots</h3>
       <div class="slot-reels">
-        <div class="slot-reel${slotSpinning?' spinning':''}">${slotReels[0]}</div>
-        <div class="slot-reel${slotSpinning?' spinning':''}">${slotReels[1]}</div>
-        <div class="slot-reel${slotSpinning?' spinning':''}">${slotReels[2]}</div>
+        <div class="slot-reel${slotSpinning?' spinning':''}" id="slot-reel-0">${slotReels[0]}</div>
+        <div class="slot-reel${slotSpinning?' spinning':''}" id="slot-reel-1">${slotReels[1]}</div>
+        <div class="slot-reel${slotSpinning?' spinning':''}" id="slot-reel-2">${slotReels[2]}</div>
       </div>
       ${resultHtml}
       <div class="slot-legend">🍒×2 · 🍋×3 · 🍇×5 · 🔔×10 · 💎×20 · 7️⃣×50 &nbsp;·&nbsp; 2×🍒 = push</div>
