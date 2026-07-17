@@ -338,8 +338,7 @@ function goToShowdown(room) {
 function startHand(room) {
   const contenders = room.players.filter(p => p.chips > 0);
   if (contenders.length <= 1) {
-    room.screen = 'gameover';
-    logMsg(room, 'Game over! Not enough active players.');
+    logMsg(room, 'Waiting for busted players to top up or leave…');
     broadcastRoomState(room);
     return;
   }
@@ -618,9 +617,8 @@ io.on('connection', (socket) => {
   // ── Next hand ──────────────────────────────────────
   socket.on('next_hand', () => {
     const room = rooms[socket.roomCode];
-    if (!room || (room.screen !== 'handover' && room.screen !== 'gameover')) return;
+    if (!room || room.screen !== 'handover') return;
     if (room.creator !== socket.username)    return;
-    room.players = room.players.filter(p => p.chips > 0);
     startHand(room);
   });
 
@@ -641,14 +639,6 @@ io.on('connection', (socket) => {
     player.allIn = false;
 
     logMsg(room, `✦ ${socket.username} rebuys ✦ ${sc} chips`);
-
-    // If game was over, and now we have at least 2 active players, transition back to handover
-    if (room.screen === 'gameover') {
-      const activePlayers = room.players.filter(p => p.chips > 0);
-      if (activePlayers.length >= 2) {
-        room.screen = 'handover';
-      }
-    }
 
     callback?.({ success: true, chips: player.chips });
     broadcastRoomState(room);
