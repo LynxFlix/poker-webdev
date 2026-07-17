@@ -170,6 +170,26 @@ function generateRoomCode() {
   return rooms[code] ? generateRoomCode() : code;
 }
 
+// ── Slot machine (server-authoritative RNG & payout) ────
+const SLOT_SYMS = [
+  { sym: '🍒', w: 32, mult: 2  },
+  { sym: '🍋', w: 26, mult: 3  },
+  { sym: '🍇', w: 20, mult: 5  },
+  { sym: '🔔', w: 13, mult: 10 },
+  { sym: '💎', w: 7,  mult: 20 },
+  { sym: '7️⃣', w: 2,  mult: 50 },
+];
+const SLOT_TOTAL_W = SLOT_SYMS.reduce((s, x) => s + x.w, 0);
+function pickSlotSymbol() {
+  let r = Math.random() * SLOT_TOTAL_W;
+  for (const s of SLOT_SYMS) { if (r < s.w) return s.sym; r -= s.w; }
+  return SLOT_SYMS[0].sym;
+}
+function slotMultiplier(sym) {
+  const found = SLOT_SYMS.find(s => s.sym === sym);
+  return found ? found.mult : 0;
+}
+
 function handleFold(room, player) {
   player.folded = true;
   room.toActQueue = room.toActQueue.filter(id => id !== player.id);
@@ -641,6 +661,39 @@ io.on('connection', (socket) => {
     logMsg(room, `✦ ${socket.username} rebuys ✦ ${sc} chips`);
 
     callback?.({ success: true, chips: player.chips });
+    broadcastRoomState(room);
+  });
+
+  // ── Slot machine (real chips, server-authoritative) ──
+  socket.on('slot_spin', (data, callback) => {
+    const room = rooms[socket.roomCode];
+    if (!room) return callback?.({ error: 'Room not found' });
+    const player = playerById(room, socket.username);
+    if (!player) return callback?.({ error: 'Player not found' });
+    if (room.actingId === player.id && room.screen === 'reveal') {
+      return callback?.({ error: 'Finish your turn first!' });
+    }
+
+    const bet = Math.floor(Number(data?.bet));
+    if (!Number.isFinite(bet) || bet <= 0) return callback?.({ error: 'Invalid bet' });
+    if (bet > player.chips) return callback?.({ error: 'Not enough chips' });
+
+    player.chips -= bet;
+    const reels = [pickSlotSymbol(), pickSlotSymbol(), pickSlotSymbol()];
+    let payout = 0;
+    if (reels[0] === reels[1] && reels[1] === reels[2]) {
+      payout = bet * slotMultiplier(reels[0]);
+    } else {
+      const cherries = reels.filter(r => r === '🍒').length;
+      if (cherries === 2) payout = bet; // consolation push
+    }
+    player.chips += payout;
+
+    if (payout > bet)      logMsg(room, `🎰 ${socket.username} spins ✦${bet} → ${reels.join('')} → wins ✦${payout}!`);
+    else if (payout === bet && payout > 0) logMsg(room, `🎰 ${socket.username} spins ✦${bet} → ${reels.join('')} → pushes`);
+    else                   logMsg(room, `🎰 ${socket.username} spins ✦${bet} → ${reels.join('')} → no luck`);
+
+    callback?.({ success: true, reels, bet, payout, chips: player.chips });
     broadcastRoomState(room);
   });
 
