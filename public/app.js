@@ -551,6 +551,15 @@ function connectSocket(){
     // Sync localChat from server on first load
     if(localChat.length===0&&s.chatMessages?.length>0)localChat=[...s.chatMessages];
     gameState=s;
+    // While the local slot-spin animation is playing, skip the full
+    // re-render here — the server resolves + broadcasts the spin result
+    // almost instantly, well before our ~1s fake spin animation ends.
+    // Rendering immediately was tearing down and remounting the whole
+    // modal mid-spin (visible as a flash between the table and the
+    // slot screen). gameState is still updated above so nothing is lost;
+    // spinSlots()'s own finish() callback renders the final state once
+    // the animation completes.
+    if(slotSpinning)return;
     render();
   });
   socket.on('chat_message',msg=>{appendChatMsg(msg);});
