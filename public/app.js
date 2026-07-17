@@ -979,8 +979,14 @@ function renderGame(){
   if(!me)return;
   const isHandover=gameState.screen==='handover';
   const isMyTurn=gameState.actingId===username && !isHandover;
-  const toCall=gameState.currentBet-me.currentBet;
-  const canCheck=toCall===0;
+  const rawToCall=gameState.currentBet-me.currentBet;
+  // A player can never be asked to put in more than the chips they have —
+  // if their stack is shorter than the outstanding bet, "call" is really
+  // an all-in for whatever they have left. Cap the displayed/acted-on
+  // amount so the button never shows a number the player can't actually pay.
+  const toCall=Math.max(0,Math.min(rawToCall,me.chips));
+  const callIsAllIn=toCall>0&&toCall===me.chips&&toCall<rawToCall;
+  const canCheck=rawToCall===0;
   const minRaise=gameState.currentBet+gameState.minRaiseIncrement;
   const maxRaise=me.currentBet+me.chips;
   const pot=potTotal();
@@ -1040,7 +1046,7 @@ function renderGame(){
               return `<div class="bi-status handover-banner">${revealingBoard?'🔥 Running it out…':(winnerText || 'Hand Completed')}</div>${revealingBoard?'':huntBtn}`;
             })()
           : (isMyTurn
-            ? `<div class="bi-status myturn">⚡ YOUR TURN${toCall>0?`&nbsp;·&nbsp;<strong>${toCall}</strong> to call`:'&nbsp;·&nbsp;can check'}&nbsp;·&nbsp;pot <strong>${pot}</strong></div>`
+            ? `<div class="bi-status myturn">⚡ YOUR TURN${toCall>0?`&nbsp;·&nbsp;<strong>${toCall}</strong> to call${callIsAllIn?' (ALL IN)':''}`:'&nbsp;·&nbsp;can check'}&nbsp;·&nbsp;pot <strong>${pot}</strong></div>`
             : `<div class="bi-status">⌛ Waiting for <strong>${esc(actP?.name||'…')}</strong></div>`)
         }
         ${isHandover ? '' : meter}
@@ -1074,7 +1080,7 @@ function renderGame(){
           <button class="ab-fold" id="ab-fold">FOLD</button>
           ${canCheck
             ?`<button class="ab-check" id="ab-action">CHECK</button>`
-            :`<button class="ab-check" id="ab-action">CALL<small>✦${toCall}</small></button>`}
+            :`<button class="ab-check" id="ab-action">${callIsAllIn?'CALL (ALL IN)':'CALL'}<small>✦${toCall}</small></button>`}
           ${me.chips>0?`<button class="ab-raise" id="ab-raise"><span>${gameState.currentBet>0?'RAISE TO':'BET'}</span><small id="ab-raise-amt">✦${initRaise}</small></button>`:''}
         </div>
       </div>
@@ -1166,7 +1172,7 @@ function renderGame(){
     const abFold=document.getElementById('ab-fold');
     if(abFold)abFold.onclick=()=>{clearTimer();socket.emit('game_action',{type:'fold'});};
     const abAction=document.getElementById('ab-action');
-    if(abAction)abAction.onclick=()=>{clearTimer();socket.emit('game_action',{type:canCheck?'check':'call'});};
+    if(abAction)abAction.onclick=()=>{clearTimer();socket.emit('game_action',{type:canCheck?'check':(callIsAllIn?'allin':'call')});};
     const abRaise=document.getElementById('ab-raise');
     if(abRaise)abRaise.onclick=()=>{
       clearTimer();
