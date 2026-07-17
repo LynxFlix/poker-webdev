@@ -39,7 +39,7 @@ let seenFirstState   = false;
 let prevDealerIndex  = null;
 
 // Ambient sound
-let ambientOn    = true;
+let ambientOn    = false;
 let ambientNodes = null;
 
 // ── Avatar colours ────────────────────────────────────
@@ -223,19 +223,20 @@ function startAmbient(){
     let lastOut=0;
     for(let i=0;i<bufSize;i++){
       const white=Math.random()*2-1;
-      lastOut=(lastOut+0.02*white)/1.02;
-      data[i]=lastOut*3.2;
+      lastOut=(lastOut+0.015*white)/1.015;
+      data[i]=lastOut*3.5;
     }
     const noise=a.createBufferSource();
     noise.buffer=buffer;noise.loop=true;
-    const filter=a.createBiquadFilter();
-    filter.type='bandpass';filter.frequency.value=750;filter.Q.value=0.5;
-    const gain=a.createGain();gain.gain.value=0.014;
-    noise.connect(filter);filter.connect(gain);gain.connect(a.destination);
+    // Two-stage lowpass to keep this a soft low rumble, not a hiss
+    const f1=a.createBiquadFilter();f1.type='lowpass';f1.frequency.value=280;f1.Q.value=0.4;
+    const f2=a.createBiquadFilter();f2.type='lowpass';f2.frequency.value=180;f2.Q.value=0.4;
+    const gain=a.createGain();gain.gain.value=0.005;
+    noise.connect(f1);f1.connect(f2);f2.connect(gain);gain.connect(a.destination);
     noise.start();
     const iv=setInterval(()=>{
-      if(ambientOn&&Math.random()<0.35)beep(1300+Math.random()*500,.03,'triangle',.018);
-    },2600);
+      if(ambientOn&&Math.random()<0.2)beep(1200+Math.random()*400,.02,'triangle',.008);
+    },3400);
     ambientNodes={noise,gain,iv};
   }catch{}
 }
