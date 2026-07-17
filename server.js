@@ -577,7 +577,15 @@ io.on('connection', (socket) => {
     const player = playerById(room, socket.username);
     if (type === 'fold')                     handleFold(room, player);
     else if (type === 'check')               { logMsg(room, `${player.name} checks`); applyBet(room, player, player.currentBet); }
-    else if (type === 'call')                { const callTo = room.currentBet; logMsg(room, `${player.name} calls ${callTo - player.currentBet}`); applyBet(room, player, callTo); }
+    else if (type === 'call')                {
+      const callTo    = room.currentBet;
+      const maxTotal   = player.currentBet + player.chips;
+      const actualTotal = Math.min(callTo, maxTotal);
+      const paid        = actualTotal - player.currentBet;
+      const isShortAllIn = actualTotal === maxTotal && actualTotal < callTo;
+      logMsg(room, `${player.name} calls ${paid}${isShortAllIn ? ' (all in)' : ''}`);
+      applyBet(room, player, callTo);
+    }
     else if (type === 'bet' || type === 'raise') { logMsg(room, `${player.name} ${type}s to ${amount}${amount === player.currentBet + player.chips ? ' (all in)' : ''}`); applyBet(room, player, amount); }
     else if (type === 'allin')               { const total = player.currentBet + player.chips; logMsg(room, `${player.name} goes all in for ${total}`); applyBet(room, player, total); }
     advanceTurn(room);
