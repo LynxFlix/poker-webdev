@@ -275,6 +275,8 @@ function detectEvents(s){
     else if(lo.includes('checks'))   {toast(`✓ ${top}`,'',1400);SFX.check();}
     else if(lo.includes('folds'))    {toast(`🃏 ${top}`,'t-fold',2200);SFX.fold();}
     else if(lo.includes('expired'))  {toast(`⏰ ${top}`,'t-fold',2500);}
+    else if(lo.includes('left the room')) {toast(`🚪 ${top}`,'t-fold',3000);}
+    else if(lo.includes('disconnected'))  {toast(`⚡ ${top}`,'t-fold',3000);}
   }
   if(s.actingId!==prevAct&&s.actingId===username&&s.screen==='reveal'){SFX.turn();startTimer();}
   else if(s.actingId!==prevAct){clearTimer();}
