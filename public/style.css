@@ -1077,7 +1077,7 @@ button:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
    SLOT MACHINE
 ═══════════════════════════════════════════════════════ */
 .slot-fab {
-  position: fixed; right: 18px; bottom: 18px; z-index: 90;
+  position: fixed; right: 22px; bottom: 86px; z-index: 90;
   width: 54px; height: 54px; border-radius: 50%;
   background: linear-gradient(160deg, var(--gold-light), var(--gold));
   border: 2px solid rgba(255,255,255,0.4);
@@ -1123,6 +1123,6 @@ button:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
 .slot-preset:disabled { opacity: 0.3; cursor: not-allowed; }
 
 @media (max-width: 480px) {
-  .slot-fab { width: 46px; height: 46px; font-size: 20px; right: 12px; bottom: 12px; }
+  .slot-fab { width: 46px; height: 46px; font-size: 20px; right: 22px; bottom: 82px; }
   .slot-reel { width: 54px; height: 54px; font-size: 26px; }
 }
