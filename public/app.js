@@ -42,6 +42,13 @@ let prevDealerIndex  = null;
 let ambientOn    = false;
 let ambientNodes = null;
 
+// Slot machine
+let slotOpen      = false;
+let slotBet       = 20;
+let slotSpinning  = false;
+let slotReels     = ['🍒','🍒','🍒'];
+let slotLastResult = null;
+
 // ── Avatar colours ────────────────────────────────────
 const AV_COLS = [
   ['#001A2E','#00D4FF'],['#1A0028','#D946EF'],
@@ -210,6 +217,9 @@ const SFX={
   tick:  ()=>beep(440,.04,'square',.06),
   urgent:()=>{beep(800,.08,'square',.15);setTimeout(()=>beep(600,.08,'square',.12),100);},
   chat:  ()=>beep(880,.06,'sine',.07),
+  reel:  ()=>beep(280+Math.random()*180,.04,'square',.05),
+  slotwin: ()=>[500,700,900,1200].forEach((f,i)=>setTimeout(()=>beep(f,.12,'sine',.13),i*70)),
+  slotlose:()=>{beep(220,.12,'sine',.08);setTimeout(()=>beep(160,.14,'sine',.06),90);},
 };
 
 // ── Ambient table sound (procedural, no audio files) ───
@@ -369,6 +379,7 @@ function flyDealerButton(fromIdx,toIdx){
 function handleLogEvent(top,s){
   if(!top)return;
   const lo=top.toLowerCase();
+  if(lo.includes('🎰')||lo.includes('spins'))return; // handled directly by spinSlots()
   if(lo.includes('wins'))          {toast(`🏆 ${top}`,'t-win',3500);SFX.win();if(lo.includes(username.toLowerCase()))confetti();}
   else if(lo.includes('all in'))   {toast(`🔥 ${top}`,'t-allin',3000);SFX.raise();flyChipForLog(top,s);}
   else if(lo.includes('raises')||lo.includes('bets')){toast(`💰 ${top}`,'t-raise',2400);SFX.raise();flyChipForLog(top,s);}
@@ -559,6 +570,95 @@ function rebuyChips(){
     if(r.error)toast('❌ '+r.error,'t-fold',2800);
     else{toast(`💰 Top-up! +✦ ${sc}`,'t-raise',2800);SFX.chip();}
   });
+}
+
+// ── Slot machine ──────────────────────────────────────
+const SLOT_DISPLAY_SYMS=['🍒','🍋','🍇','🔔','💎','7️⃣'];
+function setSlotBet(v){
+  const me=gameState?.players?.find(p=>p.id===username);
+  const mx=me?me.chips:0;
+  slotBet = v==='max' ? mx : Math.max(1,Math.min(Number(v),mx));
+  render();
+}
+function spinSlots(){
+  if(slotSpinning||!socket)return;
+  const me=gameState?.players?.find(p=>p.id===username);
+  if(!me)return;
+  if(me.chips<=0){toast('❌ No chips to bet!','t-fold',2500);return;}
+  const bet=Math.max(1,Math.min(slotBet,me.chips));
+  slotSpinning=true;
+  slotLastResult=null;
+  render();
+
+  const spinTick=setInterval(()=>{
+    slotReels=[0,1,2].map(()=>SLOT_DISPLAY_SYMS[Math.floor(Math.random()*SLOT_DISPLAY_SYMS.length)]);
+    SFX.reel();
+    render();
+  },90);
+
+  let serverResult=null,serverErr=null,settled=false;
+  socket.emit('slot_spin',{bet},(r)=>{
+    if(r?.error)serverErr=r.error; else serverResult=r;
+  });
+
+  const finish=()=>{
+    if(settled)return;
+    settled=true;
+    clearInterval(spinTick);
+    slotSpinning=false;
+    if(serverErr){
+      toast('❌ '+serverErr,'t-fold',2500);
+      render();
+      return;
+    }
+    const r=serverResult;
+    slotReels=r.reels;
+    slotLastResult={bet:r.bet,payout:r.payout};
+    render();
+    if(r.payout>r.bet){SFX.slotwin();confetti();toast(`🎰 JACKPOT! +✦${r.payout}`,'t-win',3200);}
+    else if(r.payout===r.bet&&r.payout>0){toast('🎰 Push — bet returned','',2000);}
+    else{SFX.slotlose();toast('🎰 No luck this time','t-fold',2000);}
+  };
+
+  setTimeout(()=>{
+    if(serverResult||serverErr){finish();return;}
+    // network slower than expected — poll briefly rather than guessing a result
+    const wait=setInterval(()=>{
+      if(serverResult||serverErr){clearInterval(wait);finish();}
+    },100);
+  },1050);
+}
+function slotModalHtml(me){
+  if(!slotOpen||!me)return'';
+  const maxBet=me.chips;
+  const bet=Math.max(0,Math.min(slotBet,maxBet));
+  let resultHtml='';
+  if(slotLastResult){
+    if(slotLastResult.payout>slotLastResult.bet) resultHtml=`<div class="slot-result win">🎉 +✦ ${slotLastResult.payout}</div>`;
+    else if(slotLastResult.payout===slotLastResult.bet&&slotLastResult.payout>0) resultHtml=`<div class="slot-result push">↩ Push — bet returned</div>`;
+    else resultHtml=`<div class="slot-result lose">💨 No win — bet lost</div>`;
+  }
+  const presets=[10,25,50,100].map(v=>`<button class="slot-preset" data-v="${v}" ${v>maxBet?'disabled':''}>${v}</button>`).join('');
+  return `
+  <div class="spec-join-modal-overlay" id="slot-overlay">
+    <div class="spec-join-modal slot-modal">
+      <div class="sjm-icon">🎰</div>
+      <h3>Lucky Slots</h3>
+      <div class="slot-reels">
+        <div class="slot-reel${slotSpinning?' spinning':''}">${slotReels[0]}</div>
+        <div class="slot-reel${slotSpinning?' spinning':''}">${slotReels[1]}</div>
+        <div class="slot-reel${slotSpinning?' spinning':''}">${slotReels[2]}</div>
+      </div>
+      ${resultHtml}
+      <div class="slot-legend">🍒×2 · 🍋×3 · 🍇×5 · 🔔×10 · 💎×20 · 7️⃣×50 &nbsp;·&nbsp; 2×🍒 = push</div>
+      <div class="slot-bet-row">
+        <span class="slot-bet-label">Bet ✦ ${bet}</span>
+        <div class="slot-bet-presets">${presets}<button class="slot-preset" data-v="max" ${maxBet<=0?'disabled':''}>MAX</button></div>
+      </div>
+      <button class="btn btn-gold" id="slot-spin-btn" style="width:100%;margin-top:14px;" ${(slotSpinning||bet<=0)?'disabled':''}>${slotSpinning?'🎰 Spinning…':'🎰 SPIN'}</button>
+      <button class="btn-ghost" id="slot-close-btn" style="width:100%;margin-top:8px;" ${slotSpinning?'disabled':''}>Close</button>
+    </div>
+  </div>`;
 }
 
 // ════════════════════════════════════════════════════
@@ -962,6 +1062,10 @@ function renderGame(){
     <!-- Chat -->
     ${chatPanelHtml(localChat)}
     ${chatBtnHtml()}
+
+    <!-- Slot machine -->
+    <button class="slot-fab" id="slot-fab-btn" title="Lucky Slots">🎰</button>
+    ${slotModalHtml(me)}
   </div>`;
 
   // Peek handler
@@ -985,6 +1089,19 @@ function renderGame(){
   if(isHandover){
     const rbb=document.getElementById('rabbit-btn');
     if(rbb)rbb.onclick=()=>{socket.emit('rabbit_hunt');rbb.disabled=true;rbb.textContent='🐇 Hunting…';};
+  }
+
+  // Slot machine
+  const sfab=document.getElementById('slot-fab-btn');
+  if(sfab)sfab.onclick=()=>{slotOpen=true;slotLastResult=null;render();};
+  if(slotOpen){
+    const scb=document.getElementById('slot-close-btn');
+    if(scb)scb.onclick=()=>{if(!slotSpinning){slotOpen=false;render();}};
+    document.querySelectorAll('.slot-preset').forEach(btn=>{
+      btn.onclick=()=>setSlotBet(btn.dataset.v);
+    });
+    const ssb=document.getElementById('slot-spin-btn');
+    if(ssb)ssb.onclick=()=>spinSlots();
   }
 
   // Action handlers
