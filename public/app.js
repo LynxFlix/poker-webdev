@@ -587,7 +587,28 @@ function setSlotBet(v){
   const me=gameState?.players?.find(p=>p.id===username);
   const mx=me?me.chips:0;
   slotBet = v==='max' ? mx : Math.max(1,Math.min(Number(v),mx));
-  render();
+  updateSlotUI();
+}
+// Refreshes just the slot machine modal (bet presets, spin button state,
+// result banner) without touching the rest of the page. Previously every
+// slot interaction (choosing a bet, spinning, finishing a spin) called the
+// master render(), which rebuilds the ENTIRE game screen — table, chat,
+// action buttons, everything — causing a visible flash/switch each time.
+function updateSlotUI(){
+  const root=document.getElementById('slot-modal-root');
+  if(!root)return;
+  const me=gameState?.players?.find(p=>p.id===username);
+  root.innerHTML=slotModalHtml(me);
+  wireSlotModalHandlers();
+}
+function wireSlotModalHandlers(){
+  const scb=document.getElementById('slot-close-btn');
+  if(scb)scb.onclick=()=>{if(!slotSpinning){slotOpen=false;updateSlotUI();}};
+  document.querySelectorAll('.slot-preset').forEach(btn=>{
+    btn.onclick=()=>setSlotBet(btn.dataset.v);
+  });
+  const ssb=document.getElementById('slot-spin-btn');
+  if(ssb)ssb.onclick=()=>spinSlots();
 }
 function spinSlots(){
   if(slotSpinning||!socket)return;
@@ -597,7 +618,7 @@ function spinSlots(){
   const bet=Math.max(1,Math.min(slotBet,me.chips));
   slotSpinning=true;
   slotLastResult=null;
-  render();
+  updateSlotUI();
 
   const spinTick=setInterval(()=>{
     slotReels=[0,1,2].map(()=>SLOT_DISPLAY_SYMS[Math.floor(Math.random()*SLOT_DISPLAY_SYMS.length)]);
@@ -624,13 +645,13 @@ function spinSlots(){
     slotSpinning=false;
     if(serverErr){
       toast('❌ '+serverErr,'t-fold',2500);
-      render();
+      updateSlotUI();
       return;
     }
     const r=serverResult;
     slotReels=r.reels;
     slotLastResult={bet:r.bet,payout:r.payout};
-    render();
+    updateSlotUI();
     if(r.payout>r.bet){SFX.slotwin();confetti();toast(`🎰 JACKPOT! +✦${r.payout}`,'t-win',3200);}
     else if(r.payout===r.bet&&r.payout>0){toast('🎰 Push — bet returned','',2000);}
     else{SFX.slotlose();toast('🎰 No luck this time','t-fold',2000);}
@@ -1081,7 +1102,7 @@ function renderGame(){
 
     <!-- Slot machine -->
     <button class="slot-fab" id="slot-fab-btn" title="Lucky Slots">🎰</button>
-    ${slotModalHtml(me)}
+    <div id="slot-modal-root">${slotModalHtml(me)}</div>
   </div>`;
 
   // Peek handler
@@ -1109,16 +1130,8 @@ function renderGame(){
 
   // Slot machine
   const sfab=document.getElementById('slot-fab-btn');
-  if(sfab)sfab.onclick=()=>{slotOpen=true;slotLastResult=null;render();};
-  if(slotOpen){
-    const scb=document.getElementById('slot-close-btn');
-    if(scb)scb.onclick=()=>{if(!slotSpinning){slotOpen=false;render();}};
-    document.querySelectorAll('.slot-preset').forEach(btn=>{
-      btn.onclick=()=>setSlotBet(btn.dataset.v);
-    });
-    const ssb=document.getElementById('slot-spin-btn');
-    if(ssb)ssb.onclick=()=>spinSlots();
-  }
+  if(sfab)sfab.onclick=()=>{slotOpen=true;slotLastResult=null;updateSlotUI();};
+  if(slotOpen)wireSlotModalHandlers();
 
   // Action handlers
   if(isMyTurn){
