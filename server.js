@@ -644,6 +644,24 @@ io.on('connection', (socket) => {
     broadcastRoomState(room);
   });
 
+  // ── Rabbit hunt (peek at what the rest of the board would've been) ──
+  socket.on('rabbit_hunt', () => {
+    const room = rooms[socket.roomCode];
+    if (!room || room.screen !== 'handover') return;
+    const player = playerById(room, socket.username);
+    if (!player || !player.folded) return;
+    if (!room.handoverResult || !room.handoverResult.uncontested) return;
+    if (room.handoverResult.rabbitCards) return;
+
+    const need = 5 - room.community.length;
+    if (need <= 0) return;
+    const hunted = room.deck.slice(-need).reverse();
+    room.handoverResult.rabbitCards = hunted;
+
+    logMsg(room, `🐇 ${socket.username} rabbit-hunts the rest of the board`);
+    broadcastRoomState(room);
+  });
+
   // ── Leave room (explicit mid-game leave) ──────────
   socket.on('leave_room', () => {
     handleLeave(socket, true);
