@@ -32,6 +32,16 @@ let chatUnread   = 0;
 let dealAnimating = false;
 let dismissJoinPrompt = false;
 
+// Board reveal / tension state
+let visibleCommCount = 0;
+let revealingBoard   = false;
+let seenFirstState   = false;
+let prevDealerIndex  = null;
+
+// Ambient sound
+let ambientOn    = true;
+let ambientNodes = null;
+
 // ── Avatar colours ────────────────────────────────────
 const AV_COLS = [
   ['#001A2E','#00D4FF'],['#1A0028','#D946EF'],
@@ -185,7 +195,7 @@ function initBg(){
 
 // ── Audio ─────────────────────────────────────────────
 let actx=null;
-function getA(){if(!actx)actx=new(window.AudioContext||window.webkitAudioContext)();return actx;}
+function getA(){if(!actx)actx=new(window.AudioContext||window.webkitAudioContext)();else if(actx.state==='suspended')actx.resume().catch(()=>{});return actx;}
 function beep(freq,dur=.09,type='sine',vol=.12){
   try{const a=getA(),o=a.createOscillator(),g=a.createGain();o.connect(g);g.connect(a.destination);o.type=type;o.frequency.setValueAtTime(freq,a.currentTime);g.gain.setValueAtTime(vol,a.currentTime);g.gain.exponentialRampToValueAtTime(.0001,a.currentTime+dur);o.start(a.currentTime);o.stop(a.currentTime+dur);}catch{}
 }
@@ -201,6 +211,45 @@ const SFX={
   urgent:()=>{beep(800,.08,'square',.15);setTimeout(()=>beep(600,.08,'square',.12),100);},
   chat:  ()=>beep(880,.06,'sine',.07),
 };
+
+// ── Ambient table sound (procedural, no audio files) ───
+function startAmbient(){
+  if(ambientNodes||!ambientOn)return;
+  try{
+    const a=getA();
+    const bufSize=2*a.sampleRate;
+    const buffer=a.createBuffer(1,bufSize,a.sampleRate);
+    const data=buffer.getChannelData(0);
+    let lastOut=0;
+    for(let i=0;i<bufSize;i++){
+      const white=Math.random()*2-1;
+      lastOut=(lastOut+0.02*white)/1.02;
+      data[i]=lastOut*3.2;
+    }
+    const noise=a.createBufferSource();
+    noise.buffer=buffer;noise.loop=true;
+    const filter=a.createBiquadFilter();
+    filter.type='bandpass';filter.frequency.value=750;filter.Q.value=0.5;
+    const gain=a.createGain();gain.gain.value=0.014;
+    noise.connect(filter);filter.connect(gain);gain.connect(a.destination);
+    noise.start();
+    const iv=setInterval(()=>{
+      if(ambientOn&&Math.random()<0.35)beep(1300+Math.random()*500,.03,'triangle',.018);
+    },2600);
+    ambientNodes={noise,gain,iv};
+  }catch{}
+}
+function stopAmbient(){
+  if(!ambientNodes)return;
+  try{ambientNodes.noise.stop();}catch{}
+  clearInterval(ambientNodes.iv);
+  ambientNodes=null;
+}
+function toggleAmbient(){
+  ambientOn=!ambientOn;
+  if(ambientOn)startAmbient();else stopAmbient();
+  render();
+}
 
 // ── Toast ─────────────────────────────────────────────
 function toast(msg,cls='',ms=2800){
@@ -255,32 +304,140 @@ function triggerDealAnimation(){
   const scene=document.getElementById('table-scene');
   if(scene){scene.classList.add('dealing');setTimeout(()=>{scene.classList.remove('dealing');dealAnimating=false;},900);}
 }
+function sequentialDealSound(s){
+  const inHand=(s.players||[]).filter(p=>p.chips>0||p.holeCards?.length===2).length||s.players.length;
+  const total=Math.max(inHand*2,2);
+  let n=0;
+  const iv=setInterval(()=>{
+    SFX.card();
+    if(++n>=total)clearInterval(iv);
+  },90);
+}
+
+// ── Flying chip (seat → pot) ───────────────────────────
+function flyChip(pid){
+  const seatEl=document.querySelector(`.seat[data-pid="${pid}"] .seat-av`);
+  const potEl=document.getElementById('pot-holo');
+  const sceneEl=document.getElementById('table-scene');
+  if(!seatEl||!potEl||!sceneEl)return;
+  const sceneRect=sceneEl.getBoundingClientRect();
+  const seatRect=seatEl.getBoundingClientRect();
+  const potRect=potEl.getBoundingClientRect();
+  const chip=document.createElement('div');
+  chip.className='flying-chip';
+  chip.style.left=(seatRect.left-sceneRect.left+seatRect.width/2-9)+'px';
+  chip.style.top=(seatRect.top-sceneRect.top+seatRect.height/2-9)+'px';
+  sceneEl.appendChild(chip);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    chip.style.left=(potRect.left-sceneRect.left+potRect.width/2-9)+'px';
+    chip.style.top=(potRect.top-sceneRect.top+potRect.height/2-9)+'px';
+    chip.style.opacity='0.2';
+    chip.style.transform='scale(.55) rotate(160deg)';
+  }));
+  setTimeout(()=>chip.remove(),680);
+}
+function flyChipForLog(logText,s){
+  const p=(s.players||[]).find(pl=>logText.startsWith(pl.name+' '));
+  if(p)flyChip(p.id);
+}
+
+// ── Flying dealer button (old seat → new seat) ─────────
+function flyDealerButton(fromIdx,toIdx){
+  const scene=document.getElementById('table-scene');
+  if(!scene)return;
+  const seats=scene.querySelectorAll('.seat');
+  const fromAv=seats[fromIdx]?.querySelector('.seat-av');
+  const toAv=seats[toIdx]?.querySelector('.seat-av');
+  if(!fromAv||!toAv)return;
+  const sceneRect=scene.getBoundingClientRect();
+  const fr=fromAv.getBoundingClientRect(),tr=toAv.getBoundingClientRect();
+  const btn=document.createElement('div');
+  btn.className='flying-dealer-btn';
+  btn.textContent='D';
+  btn.style.left=(fr.left-sceneRect.left+fr.width-10)+'px';
+  btn.style.top=(fr.top-sceneRect.top+fr.height-10)+'px';
+  scene.appendChild(btn);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    btn.style.left=(tr.left-sceneRect.left+tr.width-10)+'px';
+    btn.style.top=(tr.top-sceneRect.top+tr.height-10)+'px';
+  }));
+  setTimeout(()=>btn.remove(),700);
+}
 
 // ── Event detection ───────────────────────────────────
+function handleLogEvent(top,s){
+  if(!top)return;
+  const lo=top.toLowerCase();
+  if(lo.includes('wins'))          {toast(`🏆 ${top}`,'t-win',3500);SFX.win();if(lo.includes(username.toLowerCase()))confetti();}
+  else if(lo.includes('all in'))   {toast(`🔥 ${top}`,'t-allin',3000);SFX.raise();flyChipForLog(top,s);}
+  else if(lo.includes('raises')||lo.includes('bets')){toast(`💰 ${top}`,'t-raise',2400);SFX.raise();flyChipForLog(top,s);}
+  else if(lo.includes('calls'))    {toast(`👁 ${top}`,'',1800);SFX.chip();flyChipForLog(top,s);}
+  else if(lo.includes('checks'))   {toast(`✓ ${top}`,'',1400);SFX.check();}
+  else if(lo.includes('folds'))    {toast(`🃏 ${top}`,'t-fold',2200);SFX.fold();}
+  else if(lo.includes('expired'))  {toast(`⏰ ${top}`,'t-fold',2500);}
+  else if(lo.includes('left the room')) {toast(`🚪 ${top}`,'t-fold',3000);}
+  else if(lo.includes('disconnected'))  {toast(`⚡ ${top}`,'t-fold',3000);}
+  else if(lo.includes('rabbit'))   {toast(`🐇 ${top}`,'',3000);}
+}
+
 function detectEvents(s){
+  if(!seenFirstState){
+    seenFirstState=true;
+    visibleCommCount=s.community.length;
+    prevHand=s.handNumber;prevComm=s.community.length;
+    prevLog0=s.log?.[0]||null;prevAct=s.actingId;prevDealerIndex=s.dealerIndex;
+    startAmbient();
+    return;
+  }
+
   if(s.handNumber>prevHand){
     dismissJoinPrompt=false;
     toast(`✦ Hand #${s.handNumber}`,'',1800);
-    SFX.card();
+    sequentialDealSound(s);
     triggerDealAnimation();
+    visibleCommCount=0;
+    if(prevDealerIndex!=null&&s.dealerIndex!==prevDealerIndex)flyDealerButton(prevDealerIndex,s.dealerIndex);
+    // small/big blind chips sliding in
+    const ring=s.ring||[],n=s.players.length;
+    const sbId=ring[n===2?0:1],bbId=ring[n===2?1:2];
+    if(sbId)setTimeout(()=>flyChip(sbId),380);
+    if(bbId)setTimeout(()=>flyChip(bbId),540);
   }
-  if(s.community.length>prevComm){const L={3:'Flop',4:'Turn',5:'River'}[s.community.length];if(L){toast(`🃏 ${L}`,'',1400);SFX.card();}}
-  const top=s.log?.[0];
-  if(top&&top!==prevLog0){
-    const lo=top.toLowerCase();
-    if(lo.includes('wins'))          {toast(`🏆 ${top}`,'t-win',3500);SFX.win();if(lo.includes(username.toLowerCase()))confetti();}
-    else if(lo.includes('all in'))   {toast(`🔥 ${top}`,'t-allin',3000);SFX.raise();}
-    else if(lo.includes('raises')||lo.includes('bets')){toast(`💰 ${top}`,'t-raise',2400);SFX.raise();}
-    else if(lo.includes('calls'))    {toast(`👁 ${top}`,'',1800);SFX.chip();}
-    else if(lo.includes('checks'))   {toast(`✓ ${top}`,'',1400);SFX.check();}
-    else if(lo.includes('folds'))    {toast(`🃏 ${top}`,'t-fold',2200);SFX.fold();}
-    else if(lo.includes('expired'))  {toast(`⏰ ${top}`,'t-fold',2500);}
-    else if(lo.includes('left the room')) {toast(`🚪 ${top}`,'t-fold',3000);}
-    else if(lo.includes('disconnected'))  {toast(`⚡ ${top}`,'t-fold',3000);}
+
+  const top=s.log?.[0]||null;
+  const isNewLog=top&&top!==prevLog0;
+  const fastForward=s.screen==='handover'&&s.community.length>visibleCommCount&&s.community.length>prevComm;
+
+  if(fastForward){
+    revealingBoard=true;
+    toast('🔥 ALL IN — running it out…','t-allin',2400);
+    SFX.raise();
+    const target=s.community.length;
+    const step=()=>{
+      visibleCommCount++;
+      SFX.card();
+      render();
+      if(visibleCommCount<target){
+        setTimeout(step,1050);
+      }else{
+        revealingBoard=false;
+        if(isNewLog)handleLogEvent(top,s);
+        render();
+      }
+    };
+    setTimeout(step,650);
+  }else{
+    if(s.community.length>visibleCommCount){
+      const L={3:'Flop',4:'Turn',5:'River'}[s.community.length];
+      if(L){toast(`🃏 ${L}`,'',1400);SFX.card();}
+    }
+    visibleCommCount=s.community.length;
+    if(isNewLog)handleLogEvent(top,s);
   }
+
   if(s.actingId!==prevAct&&s.actingId===username&&s.screen==='reveal'){SFX.turn();startTimer();}
   else if(s.actingId!==prevAct){clearTimer();}
-  prevHand=s.handNumber;prevComm=s.community.length;prevLog0=top||null;prevAct=s.actingId;
+  prevHand=s.handNumber;prevComm=s.community.length;prevLog0=top;prevAct=s.actingId;prevDealerIndex=s.dealerIndex;
 }
 
 // ════════════════════════════════════════════════════
@@ -406,11 +563,11 @@ function rebuyChips(){
 // ════════════════════════════════════════════════════
 // Card Builders
 // ════════════════════════════════════════════════════
-function communityCard(card,idx=0){
+function communityCard(card,idx=0,ghost=false){
   if(!card)return`<div class="comm-slot empty"><div class="comm-slot-inner"></div></div>`;
   const r=isRed(card.suit);
   return`<div class="comm-slot" style="animation-delay:${idx*0.08}s">
-    <div class="comm-card${r?' r':''}">
+    <div class="comm-card${r?' r':''}${ghost?' ghost':''}">
       <div class="cc-top"><span class="cc-rank">${rl(card.rank)}</span><span class="cc-suit">${ss(card.suit)}</span></div>
       <div class="cc-center">${ss(card.suit)}</div>
       <div class="cc-bot"><span class="cc-rank">${rl(card.rank)}</span><span class="cc-suit">${ss(card.suit)}</span></div>
@@ -487,7 +644,7 @@ function buildTable(activeId,opts={}){
     const offDot=!p.connected?`<span class="dot-offline"></span>`:'';
     const chips=chipStackHtml(p.chips,3);
 
-    return`<div class="${cls}">
+    return`<div class="${cls}" data-pid="${p.id}">
       ${bet}
       <div class="seat-av" style="${avStyle(p.name)}">${rb}${avLetter(p.name)}</div>
       <div class="seat-plate">
@@ -502,7 +659,17 @@ function buildTable(activeId,opts={}){
     </div>`;
   }).join('');
 
-  const boardHtml=[0,1,2,3,4].map(i=>communityCard(gameState.community[i],i)).join('');
+  const showCount=Math.min(visibleCommCount,gameState.community.length);
+  const rabbit=(gameState.screen==='handover'&&gameState.handoverResult?.rabbitCards)||null;
+  const boardHtml=[0,1,2,3,4].map(i=>{
+    if(i<showCount&&gameState.community[i])return communityCard(gameState.community[i],i);
+    if(rabbit){
+      const rIdx=i-gameState.community.length;
+      if(rIdx>=0&&rIdx<rabbit.length)return communityCard(rabbit[rIdx],i,true);
+    }
+    return communityCard(null,i);
+  }).join('');
+  const rabbitLabel=rabbit?`<div class="rabbit-label">🐇 What could've been</div>`:'';
   const street=gameState.street?gameState.street.toUpperCase():'';
   const pot=potTotal();
 
@@ -513,11 +680,12 @@ function buildTable(activeId,opts={}){
   return`<div class="table-scene" id="table-scene">
     <div class="table-oval">
       <div class="table-center">
-        <div class="tbl-street">${street}</div>
+        <div class="tbl-street">${revealingBoard?'🔥 RUNNING IT OUT':street}</div>
         <div class="pot-holo" id="pot-holo">
           <span class="pot-icon">◈</span><span class="pot-amount">${pot}</span>
         </div>
         <div class="community-row">${boardHtml}</div>
+        ${rabbitLabel}
       </div>
     </div>
     ${seatsHtml}
@@ -697,6 +865,7 @@ function renderGame(){
       <span class="gt-info">Hand&nbsp;<strong>#${gameState.handNumber}</strong>&nbsp;&nbsp;<span class="code-pill">${gameState.code}</span></span>
       <span class="gt-right">
         <span class="gt-chips"><span class="gt-name">${esc(username)}</span>&nbsp;·&nbsp;<span class="gt-val">✦ ${me.chips}</span></span>
+        <button onclick="toggleAmbient()" class="leave-btn" title="Toggle table ambience" style="margin-right:6px;">${ambientOn?'🔊':'🔇'}</button>
         <button onclick="leaveRoom()" class="leave-btn">⬅ Leave</button>
       </span>
     </div>
@@ -728,7 +897,9 @@ function renderGame(){
                   return `🏆 ${p.winners.map(w => `${esc(w.name)} wins ${w.amount}${w.desc ? ` (${w.desc})` : ''}`).join(', ')}`;
                 }).join(' | ');
               }
-              return `<div class="bi-status handover-banner">${winnerText || 'Hand Completed'}</div>`;
+              const canHunt = r?.uncontested && me.folded && gameState.community.length<5 && !r.rabbitCards;
+              const huntBtn = canHunt ? `<button class="btn btn-cyan" id="rabbit-btn" style="margin-top:10px;padding:8px 18px;font-size:13px;">🐇 Rabbit Hunt</button>` : '';
+              return `<div class="bi-status handover-banner">${revealingBoard?'🔥 Running it out…':(winnerText || 'Hand Completed')}</div>${revealingBoard?'':huntBtn}`;
             })()
           : (isMyTurn
             ? `<div class="bi-status myturn">⚡ YOUR TURN${toCall>0?`&nbsp;·&nbsp;<strong>${toCall}</strong> to call`:'&nbsp;·&nbsp;can check'}&nbsp;·&nbsp;pot <strong>${pot}</strong></div>`
@@ -807,6 +978,12 @@ function renderGame(){
     if(tub)tub.onclick=()=>rebuyChips();
     const ltb=document.getElementById('leave-table-btn');
     if(ltb)ltb.onclick=()=>leaveRoom();
+  }
+
+  // Rabbit hunt
+  if(isHandover){
+    const rbb=document.getElementById('rabbit-btn');
+    if(rbb)rbb.onclick=()=>{socket.emit('rabbit_hunt');rbb.disabled=true;rbb.textContent='🐇 Hunting…';};
   }
 
   // Action handlers
